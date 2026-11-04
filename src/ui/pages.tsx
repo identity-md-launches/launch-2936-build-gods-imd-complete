@@ -1,8 +1,8 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { useWorld } from './useWorld';
 import { FACTIONS, FACTION_INFO, RARITIES, type Faction } from '../sim/genesis';
-import { adopt, decide, G, PRIORITIES, release, summary, type Agent } from '../sim/sim';
-import { emit, reset, save } from '../sim/store';
+import { G, marketQuote, PRIORITIES, RESOURCES, summary, type Agent, type Res } from '../sim/sim';
+import { connect, connection, execute, reset, useLocalWorld } from '../sim/store';
 import { checksum, duel, EVENT_INFO, eventsAround, maxHp, power, rank, seasonAt } from '../sim/rules';
 import { LOC, LOCATIONS } from '../sim/world';
 import { ACT_LABEL, activity, FactionTag, fmtDur, fmtUtc, gname, Meter, Portrait } from './common';
@@ -10,10 +10,18 @@ import { fighter } from '../sim/sim';
 
 const PAGE = 48;
 
+function CharacterHistory({ agent }: { agent: Agent }) {
+  const [shown, setShown] = useState(40);
+  return <>
+    {agent.history.length === 0 ? <p className="empty">Nothing recorded yet.</p> : <ul className="feed">{agent.history.slice(0, shown).map((h, i) => <li key={i}>{h}</li>)}</ul>}
+    {shown < agent.history.length && <button className="btn" type="button" onClick={() => setShown(shown + 40)}>Show older history</button>}
+  </>;
+}
+
 export function InhabitantsPage() {
   const w = useWorld();
   const [q, setQ] = useState('');
-  const [fac, setFac] = useState(() => { const f = sessionStorage.getItem('f'); sessionStorage.removeItem('f'); return f ?? 'all'; });
+  const [fac, setFac] = useState(() => { try { const f = sessionStorage.getItem('f'); sessionStorage.removeItem('f'); return FACTIONS.includes(f as Faction) ? f! : 'all'; } catch { return 'all'; } });
   const [rar, setRar] = useState('all');
   const [st, setSt] = useState('all');
   const [sort, setSort] = useState('id');
@@ -77,11 +85,11 @@ export function ProfilePage({ id }: { id: number }) {
   const a = w.agents[id - 1];
   const g = G()[id - 1];
   const mine = w.adopted.includes(id);
-  const run = (kind: 'priority' | 'goto' | 'duel' | 'stance', arg: string) => {
-    const d = decide(w, id, kind, arg, Date.now());
-    setResult(`${d.text}: ${d.status}. ${d.reason}`);
-    save(); emit();
+  const run = async (kind: 'priority' | 'goto' | 'duel' | 'stance', arg: string) => {
+    try { setResult(await execute({ type: 'decision', id, kind, arg })); }
+    catch (error) { setResult((error as Error).message); }
   };
+  const ownership = async (type: 'adopt' | 'release') => { try { setResult(await execute({ type, id })); } catch (error) { setResult((error as Error).message); } };
   const rels = Object.entries(a.rel).sort((x, y) => y[1] - x[1]);
   const decisions = w.decisions.filter((d) => d.agent === id);
   return (
@@ -94,8 +102,8 @@ export function ProfilePage({ id }: { id: number }) {
           <p>{a.alive ? `${activity(a)} at ${LOC[a.loc].name}.` : `Fell to ${a.died?.cause} on ${fmtUtc(a.died!.at)}. This memorial keeps their identity and history.`}{a.infected ? ' Infected with the plague.' : ''}</p>
           <div className="row">
             {a.alive && (mine
-              ? <button type="button" className="btn" onClick={() => { release(w, id); save(); emit(); }}>Release</button>
-              : <button type="button" className="btn primary" onClick={() => { const e = adopt(w, id); setResult(e ?? `You now guide ${g.name}.`); save(); emit(); }}>Adopt</button>)}
+              ? <button type="button" className="btn" disabled={connection.pending} onClick={() => void ownership('release')}>Release</button>
+              : <button type="button" className="btn primary" disabled={connection.pending} onClick={() => void ownership('adopt')}>Adopt</button>)}
             {a.alive && <a className="btn" href={`#/?focus=${id}`}>Show on map</a>}
             <a className="btn ghost" href={`./genesis/metadata/${id}.json`}>Metadata</a>
           </div>
@@ -153,7 +161,7 @@ export function ProfilePage({ id }: { id: number }) {
           )}
         </section>
         <section className="card"><h2>History</h2>
-          {a.history.length === 0 ? <p className="empty">Nothing recorded yet.</p> : <ul className="feed">{a.history.map((h, i) => <li key={i}>{h}</li>)}</ul>}
+          <CharacterHistory key={id} agent={a} />
           {a.achievements.length > 0 && <p>Achievements: {a.achievements.join(', ')}</p>}
         </section>
       </div>
@@ -187,7 +195,7 @@ export function FactionsPage() {
               <dt>Territories</dt><dd>{held.length ? held.join(', ') : 'None held'}</dd>
               <dt>Event stance</dt><dd>{w.event ? (w.event.stance[f] === 'cooperate' ? 'Cooperating' : 'Competing') : 'No event'}</dd>
             </dl>
-            <a href="#/inhabitants" onClick={() => sessionStorage.setItem('f', f)}>Browse {f} members</a>
+            <a href="#/inhabitants" onClick={() => { try { sessionStorage.setItem('f', f); } catch { /* Optional filter; directory still opens when storage is denied. */ } }}>Browse {f} members</a>
           </section>
         ); })}
       </div>
@@ -205,7 +213,7 @@ function Replay({ id }: { id: string }) {
     const t = setTimeout(() => setShown((s) => s + 1), 900);
     return () => clearTimeout(t);
   }, [d, shown]);
-  if (!d) return <p className="empty">That duel is no longer in the recent record (the arena keeps the last 60).</p>;
+  if (!d) return <p className="empty">No duel with this id is recorded. Choose a duel from the arena list.</p>;
   const ga = G()[d.a - 1], gb = G()[d.b - 1];
   const fa = fighter(w.agents[d.a - 1]), fb = fighter(w.agents[d.b - 1]);
   return (
@@ -269,7 +277,9 @@ export function EventsPage() {
   const s = summary(w);
   const mine = w.adopted.find((id) => w.agents[id - 1].alive);
   const [msg, setMsg] = useState<string | null>(null);
-  const settled = w.chronicle.filter((c) => c.kind === 'oracle').slice(0, 6);
+  const [judgmentsShown, setJudgmentsShown] = useState(10);
+  const settled = w.eventHistory ?? [];
+  const stance = async (arg: 'cooperate' | 'compete') => { if (mine) try { setMsg(await execute({ type: 'decision', id: mine, kind: 'stance', arg })); } catch (error) { setMsg((error as Error).message); } };
   return (
     <div className="page">
       <h1>World events</h1>
@@ -282,12 +292,12 @@ export function EventsPage() {
           <Meter label="Progress" value={ev.kind === 'Black Plague' ? w.cureResearch : (ev.progress / ev.target) * 100} />
           {ev.kind === 'Black Plague' && <p>{s.infected} inhabitants are infected. Cure research: {w.cureResearch.toFixed(1)} of 100. Herbs sell for {w.prices.herbs.toFixed(2)} coins.</p>}
           {ev.kind === 'Monster Invasion' && <p>{w.monsters} monsters remain at the frontier.</p>}
-          {ev.kind === 'Faction Challenge' && <p>Gathered: {FACTIONS.map((f) => `${f} ${ev.tally[f]}`).join(', ')}.</p>}
+          {ev.kind === 'Faction Challenge' && <p>Gathered: {FACTIONS.map((f) => `${f} ${ev.tally[f]}`).join(', ')}. A champion must gather more than 50 resources; ties break in order: Ironborn, Wilds, Veil, Crown. Only a qualifying champion receives 50 renown.</p>}
           <h3 className="h3">Your faction's stance</h3>
           {mine ? (
             <div className="row">
-              <button type="button" className="btn" aria-pressed={ev.stance[G()[mine - 1].faction] === 'cooperate'} onClick={() => { const d = decide(w, mine, 'stance', 'cooperate', Date.now()); setMsg(`${d.status}: ${d.reason}`); save(); emit(); }}>Cooperate</button>
-              <button type="button" className="btn" aria-pressed={ev.stance[G()[mine - 1].faction] === 'compete'} onClick={() => { const d = decide(w, mine, 'stance', 'compete', Date.now()); setMsg(`${d.status}: ${d.reason}`); save(); emit(); }}>Compete</button>
+              <button type="button" className="btn" aria-pressed={ev.stance[G()[mine - 1].faction] === 'cooperate'} onClick={() => void stance('cooperate')}>Cooperate</button>
+              <button type="button" className="btn" aria-pressed={ev.stance[G()[mine - 1].faction] === 'compete'} onClick={() => void stance('compete')}>Compete</button>
             </div>
           ) : <p className="empty">Adopt a living inhabitant to vote for their faction. <a href="#/">Go to the world</a></p>}
           {msg && <p className="note" role="status">{msg}</p>}
@@ -301,8 +311,8 @@ export function EventsPage() {
       </section>
       <section className="card"><h2>Oracle judgments</h2>
         <p>No official IMD Oracle endpoint is connected to this static build. Every outcome uses the published fallback rule: success if progress reaches the event's target, otherwise failure. The inputs are recorded with the result.</p>
-        {ev?.oracle && <pre className="code">{JSON.stringify(ev.oracle, null, 2)}</pre>}
-        {settled.length === 0 ? <p className="empty">No event has closed on this device yet. The first judgment appears when the current event ends.</p> : <ul className="feed">{settled.map((c, i) => <li key={i}>{c.text} <span className="muted">{fmtUtc(c.at)}</span></li>)}</ul>}
+        {settled.length === 0 ? <p className="empty">No event evidence has been recorded in this world yet. The first judgment appears when the current event ends.</p> : settled.slice(0, judgmentsShown).map((e) => <details className="oracle-record" key={e.id}><summary>{e.id}: {e.oracle?.result} · {fmtUtc(e.oracle?.at ?? e.end)}</summary><pre className="code">{JSON.stringify(e.oracle, null, 2)}</pre></details>)}
+        {judgmentsShown < settled.length && <button type="button" className="btn" onClick={() => setJudgmentsShown(judgmentsShown + 10)}>Show older judgments</button>}
       </section>
     </div>
   );
@@ -344,17 +354,78 @@ export function ChroniclePage() {
   const w = useWorld();
   const kinds = Array.from(new Set(w.chronicle.map((c) => c.kind)));
   const [k, setK] = useState('all');
+  const [shown, setShown] = useState(100);
   const list = w.chronicle.filter((c) => k === 'all' || c.kind === k);
   return (
     <div className="page">
       <h1>Chronicle</h1>
       <p className="lede">The permanent record of this world: events, judgments, duels, discoveries and the fallen.</p>
-      <label className="inline">Show<select value={k} onChange={(e) => setK(e.target.value)}><option value="all">Everything</option>{kinds.map((x) => <option key={x} value={x}>{x[0].toUpperCase() + x.slice(1)}</option>)}</select></label>
+      <label className="inline">Show<select value={k} onChange={(e) => { setK(e.target.value); setShown(100); }}><option value="all">Everything</option>{kinds.map((x) => <option key={x} value={x}>{x[0].toUpperCase() + x.slice(1)}</option>)}</select></label>
+      <p className="muted">Showing {Math.min(shown, list.length)} of {list.length} records.</p>
       {list.length === 0 ? <p className="empty">Nothing of this kind has happened yet.</p> : (
-        <ul className="feed chronicle">{list.slice(0, 150).map((c, i) => <li key={i}><span className="muted num">{fmtUtc(c.at)}</span> {c.ref ? <a href={c.ref}>{c.text}</a> : c.text}</li>)}</ul>
+        <ul className="feed chronicle">{list.slice(0, shown).map((c, i) => <li key={i}><span className="muted num">{fmtUtc(c.at)}</span> {c.ref ? <a href={c.ref}>{c.text}</a> : c.text}</li>)}</ul>
       )}
+      {shown < list.length && <button type="button" className="btn" onClick={() => setShown(shown + 100)}>Show older records</button>}
     </div>
   );
+}
+
+export function MarketplacePage() {
+  const w = useWorld();
+  const [id, setId] = useState(String(w.adopted[0] ?? ''));
+  const [resource, setResource] = useState<Res>('food');
+  const [side, setSide] = useState<'buy' | 'sell'>('buy');
+  const [quantity, setQuantity] = useState('1');
+  const [message, setMessage] = useState('');
+  const a = w.adopted.includes(Number(id)) ? w.agents[Number(id) - 1] : null;
+  const faction = a ? G()[a.id - 1].faction : null;
+  const total = a ? marketQuote(w, a.id, resource, side) * Number(quantity) : 0;
+  const run = async (send = false) => {
+    if (!a) return;
+    try { setMessage(await execute(send ? { type: 'decision', id: a.id, kind: 'goto', arg: 'market' } : { type: 'trade', id: a.id, resource, side, quantity: Number(quantity) })); }
+    catch (error) { setMessage((error as Error).message); }
+  };
+  return <div className="page">
+    <h1>Grand Marketplace</h1>
+    <p className="lede">Buy supplies and sell gathered goods with your inhabitant's coins. Prices and faction stockpiles come from this world.</p>
+    <section className="card" aria-labelledby="market-trade">
+      <h2 id="market-trade">Trade goods</h2>
+      {w.adopted.length === 0 ? <p className="empty">Adopt an inhabitant to use their inventory and coins. <a className="btn primary" href="#/inhabitants">Choose an inhabitant</a></p> : <form className="calc" onSubmit={(e) => { e.preventDefault(); void run(); }}>
+        <label>Inhabitant<select value={id} onChange={(e) => { setId(e.target.value); setMessage(''); }}>{!a && <option value="">Choose an inhabitant</option>}{w.adopted.map(n => <option value={n} key={n}>#{n} {gname(n)}</option>)}</select></label>
+        {a && <>
+          <p className="market-summary">{a.alive ? `${a.arrived ? 'At' : 'Travelling to'} ${LOC[a.loc].name}` : 'Fallen · memorial'}. Coins: {a.coins.toFixed(2)}. Carrying: {RESOURCES.map(r => `${a.inv[r]} ${r}`).join(', ')}.</p>
+          {a.alive && (a.loc !== 'market' || !a.arrived) && <div><button type="button" className="btn" disabled={connection.pending} onClick={() => void run(true)}>Send to Grand Market</button><p className="hint">Wait for arrival before trading. A requested visit allows 60 seconds at the market.</p></div>}
+        </>}
+        <div className="grid2">
+          <label>Good<select value={resource} onChange={(e) => { setResource(e.target.value as Res); setMessage(''); }}>{RESOURCES.map(r => <option key={r} value={r}>{r[0].toUpperCase() + r.slice(1)}</option>)}</select></label>
+          <label>Action<select value={side} onChange={(e) => { setSide(e.target.value as 'buy' | 'sell'); setMessage(''); }}><option value="buy">Buy from faction stockpile</option><option value="sell">Sell to faction stockpile</option></select></label>
+        </div>
+        <label>Quantity (1–100)<input type="number" min="1" max="100" step="1" required value={quantity} onChange={(e) => { setQuantity(e.target.value); setMessage(''); }} /></label>
+        <p className="muted">Current quote: {Number.isFinite(total) ? total.toFixed(2) : '—'} coins{faction ? `. ${faction} stock: ${w.stock[faction][resource]} ${resource}` : ''}. The price is checked again when the order runs.</p>
+        <div><button type="submit" className="btn primary" disabled={!a || !a.alive || connection.pending || connection.recovering}>{connection.pending ? 'Saving trade…' : side === 'buy' ? 'Buy goods' : 'Sell goods'}</button></div>
+      </form>}
+      <p role="status" className={message ? 'note' : undefined}>{message}</p>
+    </section>
+    <section className="card"><h2>World prices and stock</h2>
+      <table className="tbl"><thead><tr><th>Good</th><th>Buy / unit</th>{FACTIONS.map(f => <th key={f}>{f} stock</th>)}</tr></thead><tbody>{RESOURCES.map(r => <tr key={r}><th>{r[0].toUpperCase() + r.slice(1)}</th><td>{w.prices[r].toFixed(2)} coins</td>{FACTIONS.map(f => <td key={f}>{w.stock[f][r]}</td>)}</tr>)}</tbody></table>
+      <p className="hint">Sell price = world price × 80% × trade skill bonus; Trade Caravan adds 50%. Selling keeps 3 food for survival. Purchases consume your faction's stock. Empty stock means no goods are available; try later or sell supplies.</p>
+    </section>
+    <section className="card"><h2>NFT and IMD trading</h2><p>On-chain trading is unavailable. No marketplace contract, wallet or payment integration is connected. These trades use simulation coins only.</p></section>
+  </div>;
+}
+
+function WorldConnection() {
+  const [url, setUrl] = useState(connection.apiUrl);
+  const [message, setMessage] = useState('');
+  return <section className="card"><h2>World connection</h2>
+    <p>{connection.mode === 'shared' ? 'Shared play is connected. This world continues on its service when every browser closes.' : connection.mode === 'local' ? 'Local play is active. This device has its own world; it catches up when reopened.' : connection.mode === 'connecting' ? 'Joining the shared world…' : 'The shared world could not be reached.'}</p>
+    <p className="muted">An operator must run the supplied world service. Enter its URL to join. Browser sessions reserve inhabitants; adoption is not NFT ownership.</p>
+    <form className="calc" onSubmit={(e) => { e.preventDefault(); setMessage(''); void connect(url).then(() => setMessage('Joined the shared world.'), error => setMessage((error as Error).message)); }}>
+      <label>World service URL<input type="url" value={url} required onChange={(e) => setUrl(e.target.value)} placeholder="HTTPS URL supplied by the world operator" /></label>
+      <div className="row"><button type="submit" className="btn" disabled={connection.mode === 'connecting'}>{connection.mode === 'connecting' ? 'Joining…' : 'Join shared world'}</button>{connection.mode !== 'local' && <button type="button" className="btn ghost" onClick={() => { useLocalWorld(); setMessage('Returned to this device’s local world.'); }}>Use local world</button>}</div>
+      <p role="status" className={message ? 'note' : undefined}>{message}</p>
+    </form>
+  </section>;
 }
 
 function BreakEven() {
@@ -394,6 +465,7 @@ export function CouncilPage() {
     <div className="page">
       <h1>Council</h1>
       <p className="lede">Governance, treasury, requests to the developers and world health. What is not live yet says so.</p>
+      <WorldConnection />
       <div className="grid2">
         <section className="card"><h2>Governance</h2>
           <p>No proposals can be opened: no governance contract is deployed, and no Genesis token exists to vote with.</p>
@@ -411,12 +483,12 @@ export function CouncilPage() {
           <p className="muted">When a feed is connected, records will be split into online, working, submitted, accepted, completed, reviewed, deployed and verified.</p>
         </section>
         <section className="card"><h2>Genesis collection</h2>
-          <p>1,000 portraits and metadata files ship with this site. The collection is not minted, so ownership is not on chain yet and adoption is kept in this browser.</p>
+          <p>1,000 portraits and metadata files ship with this site. The collection is not minted. Adoption is a game reservation, saved on this device in local play or by the service in shared play.</p>
           <div className="row"><a className="btn" href="./genesis/manifest.json">Download manifest</a><a className="btn ghost" href="./genesis/images/1.svg">First portrait</a></div>
         </section>
         <section className="card"><h2>World health</h2>
-          <dl className="kv"><dt>Ticks simulated</dt><dd>{w.tick.toLocaleString()}</dd><dt>Saved state</dt><dd>{(size / 1024).toFixed(0)} KB on this device</dd><dt>Events executed</dt><dd>{w.executed.filter((x) => !x.endsWith(':settled')).length}</dd><dt>Living</dt><dd>{summary(w).alive}</dd></dl>
-          {!confirm ? <button type="button" className="btn" onClick={() => setConfirm(true)}>Reset this world</button> : (
+          <dl className="kv"><dt>Ticks simulated</dt><dd>{w.tick.toLocaleString()}</dd><dt>Saved state</dt><dd>{connection.mode === 'local' ? `${(size / 1024).toFixed(0)} KB on this device` : 'Authoritative service database'}</dd><dt>Events executed</dt><dd>{w.executed.filter((x) => !x.endsWith(':settled')).length}</dd><dt>Living</dt><dd>{summary(w).alive}</dd></dl>
+          {connection.mode !== 'local' ? <p className="muted">Shared worlds cannot be reset from a browser.</p> : !confirm ? <button type="button" className="btn" onClick={() => setConfirm(true)}>Reset this world</button> : (
             <div className="row" role="group" aria-label="Confirm reset">
               <p>This deletes every inhabitant's history on this device. It cannot be undone.</p>
               <button type="button" className="btn danger" onClick={() => { reset(); setConfirm(false); }}>Delete and restart</button>

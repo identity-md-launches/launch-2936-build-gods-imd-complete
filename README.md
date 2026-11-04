@@ -1,70 +1,93 @@
 # Gods of IMD
 
-A browser living-world RPG built from the specification at
-`https://github.com/RobertKodes/gods/blob/main/GODS_OF_IMD_.md`. 1,000 procedurally generated Genesis
-inhabitants live on a canvas-rendered map: they eat, rest, gather, trade, craft, socialize, train,
-duel, explore, patrol territories, research cures, raid a world boss, fall ill and die (the fallen
-become memorials). You adopt up to three of them and guide them with validated orders.
+A browser living-world RPG built from the [GODS OF IMD specification](https://github.com/RobertKodes/gods/blob/main/GODS_OF_IMD_.md). Its 1,000 Genesis inhabitants gather, trade, craft, explore, fight, fall ill and become memorials. Adopt up to three and guide them with validated orders.
 
-The site is a static export (`dist/`) with hash routing and relative asset URLs, so it runs from an
-IPFS gateway subpath. The IPFS publication under the name `gods-of-imd` is done by the IMD plane from
-the committed `dist/`; nothing in this repository publishes it.
+This revision preserves the existing game and fixes the reported collection, simulation, history, navigation, storage and responsive-layout defects. The required per-finding answers are in `.imd-responses.json`.
 
-## What is live and what is not
+## Install, preview and rebuild
 
-| Area | State in this build |
-| --- | --- |
-| World, inhabitants, needs, skills, relationships, history | Live, simulated in the browser (`src/sim/sim.ts`) |
-| Scheduled events at 09:00, 15:00, 21:00 UTC incl. Black Plague | Live; ids are unique and execute once per world (`src/sim/rules.ts`, `syncEvent`) |
-| Duels, territory control, faction battles by influence, boss raids | Live, reproducible rules shown on the Arena page |
-| 15-day UTC seasons, leaderboard, archive | Live; ranking ties break by level then lower token id |
-| Genesis collection: 1,000 SVG portraits, metadata, manifest | Generated at build into `dist/genesis/` with computed validation |
-| Persistence | `localStorage` on this device only. The world advances only while a page is open, plus up to 15 minutes of catch-up on return. There is no shared game server. |
-| Oracle | Not connected. Every judgment uses a published deterministic fallback and is labelled as such. |
-| NFT minting, ownership, wallet, IMD payments, prize pool, governance, swarm observatory | Not built: no contract is deployed (the brief forbids new deployments) and no IMD API or price could be verified. The Council page states this instead of showing invented figures. |
+Requires Node 22.13+ and npm. The shared service uses Node's built-in SQLite (experimental in Node 22).
 
-The specification also asks for a persistent 24/7 backend, PostgreSQL, contracts, a real Oracle and
-swarm integrations. Those need infrastructure, keys and owner approvals outside a static export and
-are not part of this delivery.
-
-## Install, preview, rebuild
-
-Requires Node 18+ (built with Node 24, npm 11).
-
-```bash
-npm ci              # install exact versions from package-lock.json
-npm run dev         # local dev server
-npm run build       # tsc --noEmit, then vite build into dist/ (also emits dist/genesis/)
-npm run preview     # serve the built dist/ locally
-npm test            # vitest unit tests for the simulation and collection
-npm run typecheck   # tsc --noEmit
+```sh
+npm ci
+npm run dev
+npm run typecheck
+npm test
+npm run build
+npm run preview
 ```
 
-`vite.config.ts` sets `base: './'`. Commit `dist/` after every rebuild; the publisher serves it as is.
+`npm run build` runs TypeScript checking, builds the client and generates all 1,000 portraits, metadata and the collection manifest. The build refuses an invalid manifest. `dist/index.html`, assets, `genesis/` and `server.json` are the complete static export and ship alongside source and `package-lock.json`. Vite uses `base: './'`; hash routes work under a gateway subpath. No backend code, database or credentials are bundled into the static client.
 
-## Layout
+IPFS publication under `gods-of-imd` and GitHub publication are performed by the assignment's publication system after submission. This worker did not run a publishing command or claim a public URL.
 
-- `src/sim/genesis.ts`: deterministic Genesis generator and portrait SVGs.
-- `src/sim/collection.ts`: metadata, manifest and validation (used by the Vite plugin).
-- `src/sim/rules.ts`: seasons, event schedule, duel rules, Oracle fallback, ranking.
-- `src/sim/sim.ts`: world state, utility AI, tick, events, seasons, god decisions.
-- `src/sim/store.ts`: save/load, catch-up and the 1-second tick loop.
-- `src/ui/`: canvas renderer, pages, shared components, ambient sound.
-- `tests/sim.test.ts`: unit tests.
+## Local and shared play
 
-## Validation results (latest run)
+The static export starts in **local play** when no service is configured. That world saves on this device when storage permits and catches up on return. Catch-up runs in batches without discarding elapsed time. It is separate from shared play and does not run while the browser is closed.
 
-- `npx tsc --noEmit`: passed, no errors.
-- `npx vite build`: passed; JS 218 kB (72 kB gzip), CSS 10 kB; export 2.2 MB including 2,001 Genesis files.
-- `npx vitest run`: 17 of 17 tests passed (collection uniqueness and counts, manifest references,
-  duel reproducibility, season and event schedule math, ranking tie-breaks, Oracle schema, simulation
-  determinism, duplicate event protection, order validation, duel resolution, plague cure, memorials).
-- Playwright interaction script against the built `dist/` served at a `/preview/` subpath, Chromium:
-  27 of 27 checks passed (adopt, orders, rejection of invalid orders, duel challenge, filters, empty
-  state, pagination, faction link filter, all routes, faction vote, Talk to the Dev form, break-even calculator, reset
-  confirmation, manifest served, help dialog, persistence after reload, no horizontal scroll at 320,
-  390 and 1440 on seven routes, no console errors or failed requests).
-  WebKit could not launch on this machine (missing system libraries), so Safari behaviour is unchecked.
-- Design probe `taste.mjs`: 16 of 16 checks passed.
+The repository now includes an **authoritative shared service** with durable SQLite state, exclusive adoption, session-authorized decisions and trading, permanent evidence, a background scheduler and restart recovery. To check it locally:
 
-Details, the design review and limitations are in `artifacts/validation.md`.
+```sh
+npm run server -- --db /tmp/gods-of-imd-local.sqlite --origins http://localhost:4173 --port 8787
+# In another terminal:
+npm run preview -- --host localhost --port 4173
+```
+
+Open Council, enter `http://localhost:8787` in World service URL and press Join shared world. Open another browser profile to join as another player. In shared play the browser renders service state; the service keeps running when all visitors leave. The test database in `/tmp` is not a production storage location.
+
+For an approved public service, configure its HTTPS URL in `public/server.json` and rebuild. No URL or credentials were invented. Infrastructure, budget and provisioning remain pending the operator; public shared play is not deployed. See [backend operations and API](artifacts/backend.md) for persistence, schema, scheduling, backup, recovery, security boundaries and limitations.
+
+## Implemented behavior
+
+| Area | State |
+| --- | --- |
+| World, survival, skills, relationships, factions, duels, territories, boss raids | Playable in local or connected shared play; reproducible simulation rules |
+| Events at 09:00, 15:00, 21:00 UTC and 15-day seasons | Processed in elapsed-time order; persistent event/season records |
+| Chronicle, memorials, character histories and Oracle evidence | Retained without truncation; older records accessible in the UI |
+| Marketplace | World prices, faction stocks and inhabitant inventories; validated buys/sales with simulation coins; travel required |
+| Genesis | Exactly 1,000 unique portraits, metadata, canonical SHA-256 visual hashes and validated relative references |
+| Shared persistence | Runnable service in `server/`, SQLite schema, scheduler and client connection; no infrastructure provisioned |
+| Oracle | Published deterministic fallback only; full request/result evidence retained and inspectable |
+| Wallet/NFT ownership, IMD payments, on-chain trading, prizes, governance, swarm | Unavailable and labelled. No new token/contract deployment; anonymous adoption does not prove NFT ownership |
+
+No official Oracle, economic or swarm API has been connected. This revision does not claim that every integration in the broader production specification is launched.
+
+## Collection storage
+
+`dist/genesis/manifest.json` paths are relative to `genesis/`. Each metadata file uses `../images/<id>.svg` and `../../index.html#/inhabitant/<id>`, resolved from its own `genesis/metadata/` directory. Accessibility labels do not count toward artwork uniqueness. The generator rerolls visible collisions, and validation requires 1,000 distinct canonical visual hashes. All 1,000 portraits were additionally rasterized at 256×256 and had distinct pixel hashes.
+
+Before marketplace publication, approve the collection and pin the artwork/export. `scripts/resolve-metadata.mjs` accepts the **actual approved artwork base URI**, a **public profile base URL**, and a separate **output directory**:
+
+```text
+node scripts/resolve-metadata.mjs --artwork-base <final-artwork-directory-URI> --profile-base <final-index.html-URL> --out <separate-metadata-directory>
+```
+
+It prepares all 1,000 records without publishing or minting and leaves `dist/` intact. Pin those metadata records separately after review. This two-step process avoids embedding a directory's own unknown CID into its contents. No final CID or public profile URL is supplied by this task, so none is guessed.
+
+## Checks from this revision
+
+- Production build and typecheck passed.
+- `npm test`: **33/33** simulation, collection, regression, persistence and API tests passed.
+- `npm run test:browser`: **133/133** interaction/layout checks passed in Chromium 156 and WebKit 27.2, plus two-context shared play. It serves the actual `dist/` at `/preview/`, launches an isolated SQLite service and shuts both down.
+- Pinned `taste.mjs`: **16/16** design checks passed at 320, 390 and 1440 wide.
+- A service restart/day-recovery exercise processed **86,400 ticks**, all three crossed event settlements and **54,265 Chronicle records**, then retained the result after another restart.
+
+Browser checks are optional to install separately; they do not vendor a browser or registry into the project:
+
+```sh
+npm install --prefix /tmp/gods-browser playwright@1
+/tmp/gods-browser/node_modules/.bin/playwright install chromium webkit
+GODS_PLAYWRIGHT=/tmp/gods-browser/node_modules/playwright/index.mjs npm run test:browser
+```
+
+Playwright needs its normal OS dependencies. On this worker those were extracted under `/tmp` for WebKit; its launch wrapper was adjusted there to find them. No system/browser dependencies are committed. Browser scripts leave their evidence under disposable `test/scratch/browser/`. Retained screenshots, exact coverage, findings and limitations are in [validation](artifacts/validation.md). The numbers above are worker observations, not an independent audit.
+
+## Source layout
+
+- `src/sim/`: deterministic Genesis generation, collection validation, simulation rules, commands and browser store.
+- `src/ui/`: existing canvas renderer, shared components and pages, including Marketplace and connection settings.
+- `server/`: authoritative service, HTTP API, scheduler and SQLite schema.
+- `tests/`: simulation, review regressions and service/API validation.
+- `scripts/`: repeatable browser checks and final-storage metadata preparation.
+- `DESIGN.md`: implemented tokens, typography, components and responsive behavior.
+- `artifacts/`: validation evidence and backend operations.

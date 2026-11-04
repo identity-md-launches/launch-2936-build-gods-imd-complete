@@ -33,7 +33,7 @@ export interface World {
   boss: { hp: number; max: number; defeats: number };
   monsters: number; duels: DuelResult[]; chronicle: ChronicleEntry[]; decisions: Decision[];
   event: EventState | null; executed: string[]; season: string; seasonStart: number; archive: SeasonRecord[];
-  adopted: number[]; cureResearch: number;
+  adopted: number[]; cureResearch: number; eventHistory: EventState[]; claimed?: number[];
 }
 
 export const TICK_MS = 1000;
@@ -66,7 +66,7 @@ export function newWorld(now: number): World {
     stock: zeroF(() => ({ food: 40, wood: 20, ore: 10, herbs: 10 })), renown: zeroF(() => 0),
     prices: { ...BASE_PRICE }, influence: Object.fromEntries(TERRITORIES.map((t) => [t, zeroF(() => 0)])), control: Object.fromEntries(TERRITORIES.map((t) => [t, null])),
     boss: { hp: 4000, max: 4000, defeats: 0 }, monsters: 0, duels: [], chronicle: [], decisions: [], event: null, executed: [],
-    season: s.id, seasonStart: s.start, archive: [], adopted: [], cureResearch: 0,
+    season: s.id, seasonStart: s.start, archive: [], adopted: [], cureResearch: 0, eventHistory: [],
   };
   chron(w, now, 'world', 'The Gods shaped the land. One thousand Genesis inhabitants woke in their four halls.');
   return w;
@@ -74,11 +74,9 @@ export function newWorld(now: number): World {
 
 export function chron(w: World, at: number, kind: string, text: string, ref?: string) {
   w.chronicle.unshift({ at, kind, text, ref });
-  if (w.chronicle.length > 400) w.chronicle.length = 400;
 }
 function hist(a: Agent, text: string) {
   a.history.unshift(text);
-  if (a.history.length > 14) a.history.length = 14;
 }
 function achieve(w: World, a: Agent, name: string, at: number) {
   if (a.achievements.includes(name)) return;
@@ -193,6 +191,29 @@ export function tick(w: World, at: number) {
     if (a.food > 50 && a.energy > 30 && !a.infected) a.health = Math.min(100, a.health + 0.05);
     if (a.health <= 0) { die(w, a, a.infected ? 'the Black Plague' : 'starvation', at); continue; }
 
+    // A challenged pair stays reserved, including the first duelist to arrive.
+    if (a.task?.kind === 'duel') {
+      const task = a.task;
+      const d = w.decisions.find((x) => x.id === task.decisionId);
+      const b = w.agents[(task.target ?? 0) - 1];
+      if (!d || d.status !== 'accepted' || !b?.alive || b.task?.decisionId !== task.decisionId) {
+        failDuel(w, task.decisionId, 'The duel could not run: a participant fell or lost their reservation.');
+        continue;
+      }
+      if (a.loc !== 'arena') send(a, 'arena', T);
+      if (a.arrived) {
+        a.act = 'rest';
+        if (b.arrived && b.loc === 'arena') {
+          const challenger = w.agents[d.agent - 1];
+          const opponent = challenger.id === a.id ? b : a;
+          const result = runDuel(w, challenger, opponent, at);
+          d.status = 'done'; d.reason = `Recorded ${result.duelId}; winner #${result.winner}.`;
+          a.task = null; b.task = null;
+        }
+        continue;
+      }
+    }
+
     // movement
     if (!a.arrived) {
       const dx = a.tx - a.x, dy = a.ty - a.y, d = Math.hypot(dx, dy);
@@ -207,12 +228,11 @@ export function tick(w: World, at: number) {
     if (a.task) {
       const d = w.decisions.find((x) => x.id === a.task!.decisionId);
       if (a.loc === a.task.loc) {
-        if (a.task.kind === 'duel' && a.task.target) {
-          const b = w.agents[a.task.target - 1];
-          if (b.alive) runDuel(w, a, b, at); else if (d) { d.status = 'failed'; d.reason = 'The opponent fell before the duel.'; }
-        }
+        if (a.task.kind === 'duel') continue;
         if (d && d.status === 'accepted') d.status = 'done';
         a.task = null;
+        // A requested market visit reserves a short trading window for the owner.
+        if (a.loc === 'market') { a.act = 'trade'; a.timer = 60; continue; }
       } else { send(a, a.task.loc, T); continue; }
     }
     const [act, loc] = choose(w, a, g, r);
@@ -244,6 +264,7 @@ function send(a: Agent, loc: string, T: number) {
 }
 
 function die(w: World, a: Agent, cause: string, at: number) {
+  if (a.task?.kind === 'duel') failDuel(w, a.task.decisionId, 'A participant fell before the duel.');
   a.alive = false; a.health = 0; a.act = 'rest';
   a.died = { tick: w.tick, cause, at };
   const [x, y] = locCenter('memorial', a.id);
@@ -318,7 +339,7 @@ function perform(w: World, a: Agent, g: Genesis, r: () => number, byLoc: Map<str
       break;
     case 'duel': {
       if (a.loc !== 'arena' || a.health < 60) break;
-      const foe = here.find((b) => b.id !== a.id && b.act === 'duel' && b.health >= 60 && b.timer > 0);
+      const foe = here.find((b) => b.id !== a.id && !b.task && b.act === 'duel' && b.health >= 60 && b.timer > 0);
       if (foe && r() < 0.3) runDuel(w, a, foe, at);
       break;
     }
@@ -376,6 +397,7 @@ function bump(a: Agent, id: number, d: number) {
 }
 
 export function runDuel(w: World, a: Agent, b: Agent, at: number): DuelResult {
+  if (!a.alive || !b.alive || !a.arrived || !b.arrived || a.loc !== 'arena' || b.loc !== 'arena') throw new Error('Both duelists must be alive and present at the arena.');
   const res = duel(`D-${w.season}-${w.tick}-${Math.min(a.id, b.id)}-${Math.max(a.id, b.id)}`, fighter(a), fighter(b));
   const win = w.agents[res.winner - 1], lose = w.agents[res.loser - 1];
   win.wins++; lose.losses++; win.score += 20; gainXp(w, win, 15, at); gainXp(w, lose, 5, at);
@@ -384,10 +406,16 @@ export function runDuel(w: World, a: Agent, b: Agent, at: number): DuelResult {
   const gw = G()[win.id - 1], gl = G()[lose.id - 1];
   hist(win, `Won a duel against ${gl.name} (${res.reason}).`); hist(lose, `Lost a duel to ${gw.name}.`);
   if (win.wins >= 5) achieve(w, win, 'Arena Champion', at);
-  w.duels.unshift(res); if (w.duels.length > 60) w.duels.length = 60;
+  w.duels.unshift(res);
   chron(w, at, 'duel', `${gw.name} defeated ${gl.name} in the Arena of Ash by ${res.reason}.`, `#/arena/${res.duelId}`);
   win.timer = 0; lose.timer = 0;
   return res;
+}
+
+function failDuel(w: World, decisionId: string, reason: string) {
+  const d = w.decisions.find((x) => x.id === decisionId);
+  if (d?.status === 'accepted') { d.status = 'failed'; d.reason = reason; }
+  for (const a of w.agents) if (a.task?.decisionId === decisionId) { a.task = null; a.timer = 0; }
 }
 
 // ---------- Events ----------
@@ -396,9 +424,9 @@ const TARGET: Record<EventKind, number> = { 'Black Plague': 100, Drought: 1, 'Ha
 /** Starts the event for the current UTC slot exactly once, settling the previous one first. */
 export function syncEvent(w: World, now: number) {
   const ev = currentEvent(now);
-  if (w.event && w.event.id !== ev.id && !w.event.settled) settle(w, now);
+  if (w.event && w.event.id !== ev.id && !w.event.settled) settle(w, w.event.end);
   if (w.executed.includes(ev.id)) return; // duplicate-execution guard
-  w.executed.push(ev.id); if (w.executed.length > 200) w.executed.shift();
+  w.executed.push(ev.id);
   w.event = { id: ev.id, kind: ev.kind, start: ev.start, end: ev.end, progress: 0, target: TARGET[ev.kind], stance: zeroF(() => 'cooperate' as const), tally: zeroF(() => 0), settled: false };
   if (ev.kind === 'Black Plague') {
     w.cureResearch = 0;
@@ -434,14 +462,17 @@ export function settle(w: World, now: number) {
   if (w.executed.includes(key)) { e.settled = true; return; }
   const alive = w.agents.filter((a) => a.alive).length;
   const infected = w.agents.filter((a) => a.infected).length;
-  const input: Record<string, number> = { score: e.progress, threshold: e.target, alive, infected, ticks: w.tick };
+  const qualifying = Math.max(...FACTIONS.map((f) => e.tally[f])) > 50;
+  const input: Record<string, number> = { score: e.kind === 'Faction Challenge' ? (qualifying ? 1 : 0) : e.progress, threshold: e.target, alive, infected, ticks: w.tick, ...Object.fromEntries(FACTIONS.map((f) => [`gathered${f}`, e.tally[f]])) };
   e.oracle = judge(e.id, e.kind, input, now);
   e.settled = true; w.executed.push(key);
-  if (e.kind === 'Faction Challenge') {
+  if (e.kind === 'Faction Challenge' && qualifying && e.oracle.result === EVENT_INFO[e.kind].success) {
     const champ = [...FACTIONS].sort((x, y) => e.tally[y] - e.tally[x] || FACTIONS.indexOf(x) - FACTIONS.indexOf(y))[0];
     w.renown[champ] += 50;
   }
   if (e.kind === 'Black Plague') for (const a of w.agents) if (a.infected && w.cureResearch >= 100) a.infected = false;
+  w.eventHistory ??= [];
+  if (!w.eventHistory.some((x) => x.id === e.id)) w.eventHistory.unshift(structuredClone(e));
   chron(w, now, 'oracle', `Judgment on ${e.kind} (${e.id}): ${e.oracle.result}. Rule-based fallback, inputs recorded.`, '#/events');
 }
 
@@ -471,7 +502,9 @@ export function decide(w: World, agentId: number, kind: 'priority' | 'goto' | 'd
   const d: Decision = { id: `DC-${w.decisions.length + 1}-${w.tick}`, at: now, agent: agentId, text: '', status: 'accepted', reason: '', cost: 'none' };
   const reject = (why: string) => { d.status = 'rejected'; d.reason = why; };
   if (!w.adopted.includes(agentId)) reject('You have not adopted this inhabitant.');
+  else if (!a) reject('No such inhabitant.');
   else if (!a.alive) reject('This inhabitant has fallen. Memorials take no orders.');
+  else if (a.task?.kind === 'duel' && kind !== 'stance') reject('This inhabitant is reserved for a pending duel. Wait for its result.');
   else if (kind === 'priority') {
     d.text = arg === 'none' ? 'Clear priority' : `Set priority: ${arg}`;
     if (arg !== 'none' && !PRIORITIES.includes(arg as Action)) reject('Unknown priority.');
@@ -493,16 +526,17 @@ export function decide(w: World, agentId: number, kind: 'priority' | 'goto' | 'd
     if (!b) reject('No such inhabitant.');
     else if (b.id === a.id) reject('An inhabitant cannot duel itself.');
     else if (!b.alive) reject('The opponent has fallen.');
+    else if (b.task?.kind === 'duel') reject('The opponent is reserved for another duel.');
     else if (a.health < 60 || b.health < 60) reject('Both duelists need at least 60 health.');
     else if (a.coins < 5) reject('A duel costs 5 coins of arena fee.');
-    else { a.coins -= 5; d.cost = '5 coins'; a.task = { kind: 'duel', loc: 'arena', target: b.id, decisionId: d.id }; a.timer = 0; b.task = { kind: 'goto', loc: 'arena', decisionId: d.id }; b.timer = 0; d.reason = 'Both are walking to the Arena of Ash.'; }
+    else { a.coins -= 5; d.cost = '5 coins'; a.task = { kind: 'duel', loc: 'arena', target: b.id, decisionId: d.id }; a.timer = 0; b.task = { kind: 'duel', loc: 'arena', target: a.id, decisionId: d.id }; b.timer = 0; d.reason = 'Both are walking to the Arena of Ash. Waiting for both arrivals.'; }
   } else if (kind === 'stance') {
     d.text = `Faction stance for ${w.event?.kind ?? 'event'}: ${arg}`;
     if (!w.event || w.event.settled) reject('No open event to take a stance on.');
     else if (arg !== 'cooperate' && arg !== 'compete') reject('Stance must be cooperate or compete.');
     else { w.event.stance[g.faction] = arg; d.status = 'done'; d.reason = arg === 'cooperate' ? `${g.faction} shares its stockpile with the shared effort.` : `${g.faction} keeps its stockpile for its own.`; }
   }
-  w.decisions.unshift(d); if (w.decisions.length > 80) w.decisions.length = 80;
+  w.decisions.unshift(d);
   return d;
 }
 
@@ -512,21 +546,52 @@ export function adopt(w: World, id: number): string | null {
   if (!w.agents[id - 1]?.alive) return 'Fallen inhabitants rest in the Memorial Grounds and cannot be adopted.';
   w.adopted.push(id); return null;
 }
-export function release(w: World, id: number) { w.adopted = w.adopted.filter((x) => x !== id); w.agents[id - 1].priority = null; }
+export function release(w: World, id: number) { const a = w.agents[id - 1]; if (a?.task?.kind === 'duel') failDuel(w, a.task.decisionId, 'A participant was released before the duel.'); w.adopted = w.adopted.filter((x) => x !== id); if (a) a.priority = null; }
 
-/** Advances the world to `now`, at most `cap` ticks, keeping events and seasons in step. */
-export function advance(w: World, now: number, cap = 900): number {
-  syncSeason(w, now);
+/** A bounded batch never discards its backlog. The service yields between batches. */
+export function advance(w: World, now: number, cap = Infinity): number {
   const due = Math.min(cap, Math.max(0, Math.floor((now - w.lastReal) / TICK_MS)));
-  const startReal = now - due * TICK_MS;
+  syncEvent(w, w.lastReal);
   for (let i = 0; i < due; i++) {
-    const at = startReal + (i + 1) * TICK_MS;
-    if (i % 60 === 0) syncEvent(w, at);
+    const at = w.lastReal + TICK_MS;
+    syncSeason(w, at);
+    syncEvent(w, at);
     tick(w, at);
+    w.lastReal = at;
   }
-  syncEvent(w, now);
-  w.lastReal = now;
   return due;
+}
+
+export const RESOURCES: Res[] = ['food', 'wood', 'ore', 'herbs'];
+export function marketQuote(w: World, id: number, resource: Res, side: 'buy' | 'sell') {
+  const a = w.agents[id - 1];
+  return side === 'buy' ? w.prices[resource] : w.prices[resource] * eventMod(w).sell * (1 + a.skills.trade * 0.02) * 0.8;
+}
+
+/** Coins and goods are simulation resources; these trades never transfer IMD or NFTs. */
+export function trade(w: World, id: number, resource: Res, side: 'buy' | 'sell', quantity: number, at: number): string {
+  const a = w.agents[id - 1];
+  if (!a || !w.adopted.includes(id)) throw new Error('Adopt this inhabitant before trading.');
+  if (!a.alive) throw new Error('Memorials cannot trade.');
+  if (!RESOURCES.includes(resource) || !['buy', 'sell'].includes(side) || !Number.isInteger(quantity) || quantity < 1 || quantity > 100) throw new Error('Choose a good and a quantity from 1 to 100.');
+  if (a.task || !a.arrived || a.loc !== 'market') throw new Error('Send this inhabitant to the Grand Market and wait for arrival.');
+  const f = G()[id - 1].faction, stock = w.stock[f];
+  const total = marketQuote(w, id, resource, side) * quantity;
+  if (side === 'buy') {
+    if (stock[resource] < quantity) throw new Error('The faction stockpile has too few goods. Try a smaller quantity.');
+    if (a.coins < total) throw new Error('Not enough coins. Sell goods or choose a smaller quantity.');
+    stock[resource] -= quantity; a.inv[resource] += quantity; a.coins -= total;
+    w.prices[resource] = +(w.prices[resource] + quantity * 0.01).toFixed(2);
+  } else {
+    const available = resource === 'food' ? Math.max(0, a.inv.food - 3) : a.inv[resource];
+    if (available < quantity) throw new Error(resource === 'food' ? 'Keep 3 food for survival. Sell a smaller quantity.' : 'Not enough goods in this inventory.');
+    a.inv[resource] -= quantity; stock[resource] += quantity; a.coins += total;
+    w.prices[resource] = Math.max(0.5, +(w.prices[resource] - quantity * 0.03).toFixed(2));
+    a.skills.trade += quantity * 0.02; w.renown[f] += quantity * 0.05; gainXp(w, a, quantity, at);
+  }
+  const text = `${side === 'buy' ? 'Bought' : 'Sold'} ${quantity} ${resource} for ${total.toFixed(2)} coins.`;
+  hist(a, text); chron(w, at, 'trade', `${G()[id - 1].name}: ${text}`, `#/inhabitant/${id}`);
+  return text;
 }
 
 export function summary(w: World) {

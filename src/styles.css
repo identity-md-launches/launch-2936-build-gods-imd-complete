@@ -1,5 +1,6 @@
 /* Tokens: primitives by hue, semantic roles below. Components use only the semantic tier. */
 :root {
+  color-scheme: dark;
   --ink-950: #0d1017; --ink-900: #11151d; --ink-850: #1a202b; --ink-800: #232b38; --ink-700: #34404f; --ink-300: #b6b0a2; --ink-100: #ece6d6;
   --cyan-400: #5fe0e6; --cyan-950: #0b1d1f; --coral-300: #ff9a8a;
 
@@ -128,6 +129,10 @@ meter { width: 100%; height: 10px; }
 .chronicle li { border-bottom: 1px solid var(--color-border); padding-block: var(--space-2); }
 .foot { padding: var(--space-5) var(--space-4); color: var(--color-text-secondary); font-size: var(--text-sm); border-top: 1px solid var(--color-border); }
 .foot p { max-width: 1120px; margin: 0 auto; }
+.connection-status { padding: var(--space-3) var(--space-4); }
+.market-summary { font-variant-numeric: tabular-nums; }
+.oracle-record summary { cursor: pointer; padding-block: var(--space-3); overflow-wrap: anywhere; }
+.oracle-record .code { max-width: 100%; }
 .help { max-width: min(520px, calc(100vw - 32px)); background: var(--color-surface); color: var(--color-text); border: 0; border-radius: var(--radius-lg); padding: var(--space-5); }
 .help::backdrop { background: rgba(0, 0, 0, 0.6); }
 .help ol { padding-inline-start: 1.2rem; display: flex; flex-direction: column; gap: var(--space-2); }
@@ -144,6 +149,7 @@ meter { width: 100%; height: 10px; }
 }
 @media (max-width: 420px) {
   .top { padding: 0 var(--space-3); }
+  .top .btn { padding-inline: var(--space-2); }
   .intro h1 { font-size: var(--text-xl); }
   h1 { font-size: var(--text-xl); }
   .page { padding: var(--space-5) var(--space-3); }

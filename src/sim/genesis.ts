@@ -61,6 +61,7 @@ export function genesisCollection(): Genesis[] {
   const rarities = shuffle(RARITIES.flatMap((k) => Array.from({ length: RARITY_COUNTS[k] }, () => k)), r);
   const names = new Set<string>();
   const dnas = new Set<string>();
+  const visuals = new Set<string>();
   const out: Genesis[] = [];
   for (let i = 0; i < COLLECTION_SIZE; i++) {
     const id = i + 1;
@@ -91,8 +92,9 @@ export function genesisCollection(): Genesis[] {
         eyes: Math.floor(tr() * 4), mark: Math.floor(tr() * 6), bg: Math.floor(tr() * 5),
       };
       dna = `${faction[0]}${RARITIES.indexOf(rarity)}${FACTION_INFO[faction].roles.indexOf(role)}-${look.skin}${look.hair}${look.hairColor}${look.eyes}${look.mark}${look.bg}-${ATTRS.map((a) => attrs[a].toString(16)).join('')}`;
-    } while (dnas.has(dna));
+    } while (dnas.has(dna) || visuals.has(visualPortrait(portraitSvg({ id, name, faction, role, rarity, traits, attrs, look, dna }))));
     dnas.add(dna);
+    visuals.add(visualPortrait(portraitSvg({ id, name, faction, role, rarity, traits, attrs, look, dna })));
     out.push({ id, name, faction, role, rarity, traits, attrs, look, dna });
   }
   cache = out;
@@ -152,8 +154,8 @@ export function metadataFor(g: Genesis) {
   return {
     name: `${g.name} #${g.id}`,
     description: `Genesis inhabitant #${g.id} of Gods of IMD: a ${g.rarity.toLowerCase()} ${g.role.toLowerCase()} of the ${g.faction}.`,
-    image: `images/${g.id}.svg`,
-    external_url: `index.html#/inhabitant/${g.id}`,
+    image: `../images/${g.id}.svg`,
+    external_url: `../../index.html#/inhabitant/${g.id}`,
     attributes: [
       { trait_type: 'Faction', value: g.faction },
       { trait_type: 'Role', value: g.role },
@@ -163,4 +165,9 @@ export function metadataFor(g: Genesis) {
       { trait_type: 'DNA', value: g.dna },
     ],
   };
+}
+
+/** Accessibility text describes a portrait; it must not count as visible uniqueness. */
+export function visualPortrait(svg: string) {
+  return svg.replace(/\saria-label="[^"]*"/g, '').replace(/<(title|desc)\b[^>]*>[\s\S]*?<\/\1>/g, '');
 }

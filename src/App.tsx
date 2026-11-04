@@ -1,17 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import WorldCanvas from './ui/WorldCanvas';
 import { useWorld } from './ui/useWorld';
-import { adopt, G, summary } from './sim/sim';
-import { emit, lastCatchUp, loadError, save } from './sim/store';
+import { G, summary } from './sim/sim';
+import { connection, execute, lastCatchUp, loadError } from './sim/store';
 import { activity, FactionTag, fmtDur, Portrait } from './ui/common';
 import { EVENT_INFO, seasonAt } from './sim/rules';
 import { LOC } from './sim/world';
-import { ArenaPage, ChroniclePage, CouncilPage, EventsPage, FactionsPage, InhabitantsPage, ProfilePage, SeasonPage } from './ui/pages';
+import { ArenaPage, ChroniclePage, CouncilPage, EventsPage, FactionsPage, InhabitantsPage, MarketplacePage, ProfilePage, SeasonPage } from './ui/pages';
 import { toggleSound } from './ui/sound';
 
 const NAV = [
   ['#/', 'World'], ['#/inhabitants', 'Inhabitants'], ['#/factions', 'Factions'], ['#/arena', 'Arena'],
-  ['#/events', 'Events'], ['#/season', 'Season'], ['#/chronicle', 'Chronicle'], ['#/council', 'Council'],
+  ['#/events', 'Events'], ['#/season', 'Season'], ['#/marketplace', 'Marketplace'], ['#/chronicle', 'Chronicle'], ['#/council', 'Council'],
 ] as const;
 
 function useRoute() {
@@ -36,6 +36,7 @@ function useReducedMotion() {
 }
 
 export default function App() {
+  useWorld();
   const route = useRoute();
   const reduced = useReducedMotion();
   const [sound, setSound] = useState(false);
@@ -60,6 +61,7 @@ export default function App() {
     case 'arena': page = <ArenaPage duelId={arg} />; break;
     case 'events': page = <EventsPage />; break;
     case 'season': page = <SeasonPage />; break;
+    case 'marketplace': page = <MarketplacePage />; break;
     case 'chronicle': page = <ChroniclePage />; break;
     case 'council': page = <CouncilPage />; break;
     default: page = <WorldPage reduced={reduced} focus={Number(new URLSearchParams(route.split('?')[1]).get('focus')) || null} />;
@@ -67,7 +69,7 @@ export default function App() {
   const active = path === 'inhabitant' ? '#/inhabitants' : `#/${path || ''}`;
   return (
     <>
-      <a className="skip" href="#main">Skip to content</a>
+      <a className="skip" href="#main" onClick={(e) => { e.preventDefault(); main.current?.focus({ preventScroll: false }); }}>Skip to content</a>
       <header className="top">
         <a className="brand" href="#/" aria-label="Gods of IMD, world view">
           <img src="./favicon.svg" width="24" height="24" alt="" />Gods of IMD
@@ -82,9 +84,16 @@ export default function App() {
           {NAV.map(([h, l]) => <li key={h}><a href={h} aria-current={active === h ? 'page' : undefined}>{l}</a></li>)}
         </ul>
       </nav>
-      <main id="main" ref={main} tabIndex={-1}>{page}</main>
+      <main id="main" ref={main} tabIndex={-1}>
+        {(loadError || connection.error || connection.mode === 'connecting' || connection.recovering || connection.pending) && <div className="connection-status">
+          {loadError && <p className="error" role="alert">{loadError}</p>}
+          {connection.error && <p className="error" role="alert">{connection.error} <a href="#/council">Connection settings</a></p>}
+          <p role="status">{connection.pending ? 'Saving order to the shared world…' : connection.mode === 'connecting' ? 'Joining the shared world…' : connection.recovering ? 'The shared world is recovering elapsed time. Orders resume when it catches up.' : ''}</p>
+        </div>}
+        {page}
+      </main>
       <footer className="foot">
-        <p>The world runs in your browser and is saved on this device only. There is no game server, wallet or contract in this build. <a href="#/council">What is live and what is not</a></p>
+        <p>{connection.mode === 'local' ? 'Local play: this world runs in your browser and saves on this device.' : connection.mode === 'shared' ? 'Shared play: the world runs on the connected service and keeps living when you leave.' : 'Shared play is awaiting a service connection.'} No wallet or contract is connected. <a href="#/council">World settings and integrations</a></p>
       </footer>
       <dialog ref={help} className="help" aria-labelledby="help-title" onClick={(e) => { if (e.target === help.current) help.current.close(); }}>
         <h2 id="help-title">How to play</h2>
@@ -114,17 +123,15 @@ function WorldPage({ reduced, focus }: { reduced: boolean; focus: number | null 
   const a = sel ? w.agents[sel - 1] : null;
   const g = sel ? G()[sel - 1] : null;
 
-  const adoptOne = (id?: number) => {
+  const adoptOne = async (id?: number) => {
     let target = id;
     if (!target) {
-      const pool = w.agents.filter((x) => x.alive && !w.adopted.includes(x.id));
+      const pool = w.agents.filter((x) => x.alive && !w.adopted.includes(x.id) && !w.claimed?.includes(x.id));
       target = pool[Math.floor(Math.random() * pool.length)]?.id;
     }
     if (!target) return;
-    const err = adopt(w, target);
-    if (err) { setMsg(err); return; }
-    setSel(target); save(); emit();
-    setMsg(`You now guide ${G()[target - 1].name}. Open the profile to give orders.`);
+    try { await execute({ type: 'adopt', id: target }); setSel(target); setMsg(`You now guide ${G()[target - 1].name}. Open the profile to give orders.`); }
+    catch (error) { setMsg((error as Error).message); }
   };
 
   return (
@@ -140,8 +147,8 @@ function WorldPage({ reduced, focus }: { reduced: boolean; focus: number | null 
         {!a || !g ? (
           <div className="intro">
             <h1>The world never stops living</h1>
-            <p>A browser RPG where 1,000 Genesis inhabitants work, trade and fight on their own. Adopt one and guide it.</p>
-            <button type="button" className="btn primary big" onClick={() => adoptOne()}>Adopt an inhabitant</button>
+            <p>A browser RPG where 1,000 Genesis inhabitants work, trade and fight. Adopt one and guide it.</p>
+            <button type="button" className="btn primary big" disabled={connection.pending || connection.mode === 'connecting'} onClick={() => void adoptOne()}>Adopt an inhabitant</button>
             <p className="hint">Or tap any dot on the map to meet that inhabitant first.</p>
           </div>
         ) : (
@@ -165,7 +172,6 @@ function WorldPage({ reduced, focus }: { reduced: boolean; focus: number | null 
         )}
         {msg && <p className="note" role="status">{msg}</p>}
         {lastCatchUp > 0 && <p className="hint">Caught up {fmtDur(lastCatchUp * 1000)} of world time since your last visit.</p>}
-        {loadError && <p className="error" role="alert">{loadError}</p>}
         {w.adopted.length > 0 && (
           <div>
             <h2 className="h3">Your inhabitants</h2>

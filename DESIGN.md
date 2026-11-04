@@ -13,7 +13,7 @@ system sans.
 
 ## Colors
 
-Primitives (never used directly in components) and semantic roles, `src/styles.css:2-16`:
+Primitives (never used directly in components) and semantic roles, `src/styles.css`, `:root`:
 
 | Role token | Value | Use |
 | --- | --- | --- |
@@ -31,8 +31,7 @@ Primitives (never used directly in components) and semantic roles, `src/styles.c
 Faction colours are data, not UI roles (`FACTION_INFO` in `src/sim/genesis.ts`): Ironborn #d4664a,
 Wilds #6cb460, Veil #a08ae6, Crown #e0b443. They mark faction dots, the faction card edge and map
 halls, always next to the faction name. Cyan is kept away from them so "clickable" is never confused
-with "faction". The taste probe measured every text pair on the World route as passing 4.5:1; other
-routes were not contrast-measured.
+with "faction". The design probe passed its measured solid-background text pairs on the World route at the 4.5:1 threshold (3:1 for large text). Canvas/image pairs and other routes were not exhaustively contrast-measured. `:root` declares `color-scheme: dark` so WebKit native selects use dark controls instead of a pale native fill beneath pale text; final screenshots confirm the corrected state.
 
 ## Typography
 
@@ -50,7 +49,7 @@ routes were not contrast-measured.
 ## Layout
 
 - Spacing scale `--space-1..6`: 4, 8, 12, 16, 24, 32px.
-- Header 52px: brand at the left edge, Sound and Help at the right edge. Below it a single-row nav that
+- Header 52px: brand at the left edge, Sound and Help at the right edge. At 420px and below, `.top .btn` uses 8px inline padding while preserving both labels and the 40px minimum height; WebKit at 320px fits with no page overflow. Below it a single-row nav that
   scrolls horizontally inside itself when it does not fit (the page itself never scrolls sideways).
 - World route (`.world`): grid `minmax(0,1fr) 380px`, filling the viewport under header and nav.
   At 900px and below it stacks: the scene keeps a 3:2 aspect (the whole map is visible at zoom 1), the
@@ -58,7 +57,7 @@ routes were not contrast-measured.
 - Pages (`.page`): max 1120px, centred, 32px vertical padding (24px at 420px and below).
   `.grid2` is two equal columns, one column at 900px and below. `.cards` is an auto-fill grid with a
   240px minimum. Wide tables scroll inside `.tbl`.
-- Breakpoints: 900px (stack), 420px (tighter padding, smaller h1, wrapped profile header).
+- Breakpoints: 900px (stack), 420px (tighter padding, smaller h1, wrapped profile header). Marketplace shares the page/card/form primitives: the Good and Action fields form two columns above 900px and one column below; its price table scrolls inside `.tbl`. Both engines were checked at 320, 390, 900 and 1440px on ten routes. The map and Adopt action remain on the first 390px screen.
 
 ## Elevation & Depth
 
@@ -86,8 +85,11 @@ carry a 4px left edge in the faction colour.
 - Lists: `.mini` (name and value rows), `.feed` (chronological lines), `.tbl` (data tables), `.kv`
   (definition lists).
 - Feedback: `.note` with `role="status"` for order results, `.error` with `role="alert"`, `.empty` for
-  empty states that say what to do next.
-- Forms: labels wrap their inputs; inputs 40px high; filters grid `.filters`.
+  empty states that say what to do next. `.connection-status` shows joining, pending orders, recovery and service/storage errors on every route. The footer identifies local versus shared play. Local simulation never runs behind a shared connection failure.
+- Forms: labels wrap their inputs; inputs have a 40px minimum height; filters grid `.filters`. Marketplace uses `.calc`, `.grid2`, `.market-summary` (tabular coin/inventory values), native quantity validation and one primary Buy/Sell action. Changing the trade fields clears the old response. A market visit offers a 60-second trading window; invalid trades return a visible response.
+- Permanent records: Chronicle reads 100 entries at a time with Show older records; character history reads 40 with Show older history; Oracle judgments read 10 with Show older judgments. These display limits do not delete records. `.oracle-record` uses native `<details>/<summary>` to disclose full JSON in horizontally scrollable `.code`; summary ids wrap.
+- Connection settings reuse `.card` and `.calc`; URL label, Join shared world, temporary-session warning and Use local world recovery are explicit.
+- The skip link prevents hash navigation and focuses the current main landmark, retaining the active route.
 - World map (`WorldCanvas`): focusable canvas; drag or arrow keys pan, plus/minus zoom (1 to 4), tap
   selects the nearest inhabitant. Animation (walking bob, weather, selection pulse, interpolation) is
   disabled under `prefers-reduced-motion`.
@@ -101,3 +103,9 @@ carry a 4px left edge in the faction colour.
 - Don't add a sixth font size, a kicker label above a heading, uppercase tracked labels or shadows on
   bordered surfaces.
 - Don't put a faction colour on a control.
+
+## Review limits and attribution
+
+The final production export was inspected in Chromium and WebKit. Interaction checks include native disclosure, focus return, skip navigation, denied storage, trading and service errors. No physical iPhone, screen-reader session, browser-native 200% zoom, RTL translation or animation-panel slow-motion check was performed. The implementation keeps its established five-size type scale and system fonts; no font download or unrelated visual redesign was added.
+
+Design guidance: Jakub Krehel, Better Interface (MIT), pinned commit `267330e1adfc66a718fb65fa6918c1f06d0a689e`. Documentation method: Paul Bakaus, Impeccable (Apache-2.0), pinned commit `9d715cc4f5564a990ca8345abfdd5df6dc9b41c8`. The licenses and attribution are retained in `artifacts/design-guidance-LICENSE.txt`. See `artifacts/validation.md` for coverage and evidence.

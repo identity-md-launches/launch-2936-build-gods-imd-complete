@@ -8,7 +8,8 @@ function genesisCollection(): Plugin {
     name: 'genesis-collection',
     apply: 'build',
     generateBundle() {
-      const { files } = buildCollection();
+      const { files, manifest } = buildCollection();
+      if (!manifest.allValid) this.error('Genesis collection failed reference or visual uniqueness validation.');
       for (const f of files) this.emitFile({ type: 'asset', fileName: f.path, source: f.content });
     },
   };
